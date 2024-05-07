@@ -2,6 +2,7 @@ import galsim
 import batsim
 import numpy as np
 import argparse
+import pickle
 from time import time
 
 from tqdm import tqdm, trange
@@ -37,7 +38,7 @@ def main(args):
     rescale = np.random.uniform(0.5, 1.5, ng_eff)
 
     # Total size of stamp for 4 galaxies
-    stamp_size = n_rot * nn
+    stamp_size = int(nn * np.sqrt(n_rot))
 
     progress = tqdm(total=ng_eff, desc='Generating images')
     for i in range(n_gals):
@@ -46,16 +47,17 @@ def main(args):
         # Expand the galaxy
         gal = gal.expand(rescale[i])
 
-        ident = records[i]['IDENT']
+        ident = records['IDENT'][i]
 
         # Get HLR for galaxy to create IA transform
-        if records[i]['use_bulgefit']:
-            hlr = records[i]['hlr'][2]
+        if records['use_bulgefit'][i]:
+            hlr = records['hlr'][i][2]
         else:
-            hlr = records[i]['hlr'][0]
+            hlr = records['hlr'][i][0]
 
         # Create IA transform
         IATransform = batsim.IaTransform(
+            scale=scale,
             hlr=hlr,
             A=0.00136207,
             beta=0.82404653, # best first Georgiou19+
@@ -100,6 +102,8 @@ def main(args):
             file_name='COSMOS_{}_noiseless.fits'.format(ident),
             dir=save_dir
         )
+
+    pickle.dump(psf, open(save_dir+'psf.pkl', 'wb'))
 
     progress.close()
 
