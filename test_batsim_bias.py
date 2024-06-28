@@ -11,6 +11,14 @@ from tqdm import tqdm, trange
 
 from argparse import ArgumentParser
 
+# Set matplotlib parameters
+plt.rcParams['font.family'] = 'serif'
+plt.rcParams['font.serif'] = ['cmr10']
+plt.rcParams['mathtext.fontset'] ='cm'
+plt.rcParams['figure.facecolor'] = 'white'
+plt.rc('axes', unicode_minus=False)
+plt.rc('axes.formatter', use_mathtext=True)
+
 def main(args):
 
     # Drawing parameters
@@ -53,9 +61,7 @@ def main(args):
     psf_data = psf_obj.shift(0.5 * scale, 0.5 * scale).drawImage(nx=rcut*2, ny=rcut*2, scale=scale, method='auto')
 
     progress_bar = tqdm(total=ngals*nrot, desc='Drawing galaxies')
-    galsim_ims = []
-    batsim_ims = []
-    for obj in gal_sample:
+    for i, obj in enumerate(gal_sample):
 
         galsim_image = galsim.ImageF(scene_nn, scene_nn, scale=scale)
         batsim_image = galsim.ImageF(scene_nn, scene_nn, scale=scale)
@@ -84,8 +90,6 @@ def main(args):
                 add_to_image=True,
                 method='auto'
                 )
-            
-            galsim_ims.append(galsim_image.array)
 
             #shear using batsim
             bat_img = batsim.simulate_galaxy(
@@ -101,40 +105,45 @@ def main(args):
             sub_image = galsim.Image(bat_img, scale=scale)
             batsim_image.setSubImage(bounds, sub_image)
 
-            batsim_ims.append(batsim_image.array)
-
             progress_bar.update(1)
+
+        if i == 0:
+            batsim_scene = batsim_image.array
+            galsim_scene = galsim_image.array
+        else:
+            batsim_scene = np.concatenate((batsim_scene, batsim_image.array), axis=1)
+            galsim_scene = np.concatenate((galsim_scene, galsim_image.array), axis=1)
 
     progress_bar.close()
 
     # Test on a range of kernel sizes
-    kernels = np.linspace(0.2,1.4,20)
+    kernels = np.linspace(0.3,0.7,20)
 
     galsim_bias = np.empty(len(kernels))
     batsim_bias = np.empty(len(kernels))
 
     for i in trange(len(kernels)):
         # measure on galsim galaxies
-        _, _, m_bias = test_kernel_size(
+        _, m_bias = test_kernel_size(
             sigma_arcsec=kernels[i], 
             psf_arr=psf_data.array, 
-            gal_arr_list=galsim_ims,
+            gal_scene=galsim_scene,
             true_shear=g1,
-            nn=scene_nn, 
-            scale=scale, 
-            rcut=rcut
+            nx=nn,
+            ny=nn,
+            scale=scale,
         )
         galsim_bias[i] = m_bias
 
         # measure on batsim galaxies
-        _, _, m_bias = test_kernel_size(
+        _, m_bias = test_kernel_size(
             sigma_arcsec=kernels[i], 
             psf_arr=psf_data.array, 
-            gal_arr_list=batsim_ims, 
+            gal_scene=batsim_scene, 
             true_shear=g1,
-            nn=scene_nn,
-            scale=scale,
-            rcut=rcut
+            nx=nn,
+            ny=nn,
+            scale=scale
         )
         batsim_bias[i] = m_bias
 
@@ -142,10 +151,10 @@ def main(args):
     plt.plot(kernels, abs(batsim_bias), label='BATSim')
     plt.plot(kernels, abs(galsim_bias), label='Galsim')
     plt.legend()
-    plt.xlabel('Shapelet kernel size (arcsec)')
+    plt.xlabel('Shapelet scale (arcsec)')
     plt.ylabel('Multiplicative bias')
     plt.yscale('log')
-    plt.title('Stamp size: %d pixels | # gals: %d'%(nn, ngals*nrot))
+    plt.title('Stamp size: %d pixels, Num. galaxies: %d'%(nn, ngals*nrot))
     plt.savefig('kernel_size_bias-stamp%d-ngals%d.png'%(nn,ngals*nrot), dpi=300)
 
     # Collate parameters for test report
@@ -170,33 +179,32 @@ def main(args):
     return
 
 # FPFS measurement function
-def test_kernel_size(sigma_arcsec, psf_arr, gal_arr_list, true_shear, scale, nn, rcut):
+def test_kernel_size(sigma_arcsec, psf_arr, gal_scene, true_shear, scale, nx, ny):
 
     # initialize FPFS shear measurement task
     fpTask = fpfs.image.measure_source(psf_arr, sigma_arcsec=sigma_arcsec, pix_scale=scale)
 
-    p1 = nn //2 - rcut
-    p2 = nn //2 - rcut
-    psf_arr_pad = np.pad(psf_arr, ((p1, p1), (p2, p2)))
+    scene_nx = gal_scene.shape[0]
+    scene_ny = gal_scene.shape[1]
+    
+    # force detection in specific order 
+    indX = np.arange(int(nx/2), scene_nx, nx)
+    indY = np.arange(int(ny/2), scene_ny, ny)
+    inds = np.meshgrid(indY, indX, indexing="ij")
+    coords = np.vstack([np.ravel(_) for _ in inds]).T
+    coords = np.flip(coords, axis=1)    
 
-    all_mms = []
-    for gal_arr in gal_arr_list:
-        coords = fpTask.detect_sources(gal_arr,psf_arr_pad,thres=0.01,thres2=-0.00)
-        # measure shear with FPFS on individual galaxies
-        mms = fpTask.measure(gal_arr, coords)
-        mms = fpTask.get_results(mms)
-        all_mms.append(mms)
-
-    combined_mms = rfn.stack_arrays(all_mms, usemask=False, asrecarray=True)
+    # measure shear with FPFS on entire scene
+    mms = fpTask.measure(gal_scene, coords)
+    mms = fpTask.get_results(mms)
 
     # convert momemnts to ellipticity estimates
-    ells = fpfs.catalog.fpfs_m2e(combined_mms, const=2000)
+    ells = fpfs.catalog.fpfs_m2e(mms, const=2000)
     resp = np.average(ells['fpfs_R1E'])
     shear = np.average(ells['fpfs_e1'])/resp
-    shear_err = np.std(ells["fpfs_e1"]) / np.abs(resp) / np.sqrt(len(gal_arr_list))
     m_bias = abs(shear - true_shear)/true_shear
 
-    return shear, shear_err, m_bias
+    return shear, m_bias
 
 def cancel_shape_noise(gal_obj, nrot):
     '''Create nrot rotated versions of the input galaxy object

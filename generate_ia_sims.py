@@ -3,6 +3,7 @@ import batsim
 import numpy as np
 import argparse
 import pickle
+import os
 from time import time
 
 from tqdm import tqdm, trange
@@ -35,7 +36,7 @@ def main(args):
     # Calculate the number of rotated galaxies
     n_rot = 4
     ng_eff = n_rot*n_gals
-    rescale = np.random.uniform(0.5, 1.5, ng_eff)
+    #rescale = np.random.uniform(0.5, 1.5, ng_eff)
 
     # Total size of stamp for 4 galaxies
     stamp_size = int(nn * np.sqrt(n_rot))
@@ -45,9 +46,13 @@ def main(args):
         
         gal = galaxies[i]
         # Expand the galaxy
-        gal = gal.expand(rescale[i])
+        #gal = gal.expand(rescale[i])
 
         ident = records['IDENT'][i]
+
+        if os.path.exists(save_dir+'COSMOS_{}_noiseless.fits'.format(ident)):
+            progress.update(n_rot)
+            continue
 
         # Get HLR for galaxy to create IA transform
         if records['use_bulgefit'][i]:
@@ -62,7 +67,7 @@ def main(args):
             A=0.00136207,
             beta=0.82404653, # best first Georgiou19+
             phi = np.radians(0),
-            clip_radius=3 # clip the transform at 5*hlr to prevent edge effects
+            clip_radius=5 # clip the transform at 5*hlr to prevent edge effects
         )
 
         rotated_gals = cancel_shape_noise(gal, n_rot)
@@ -100,7 +105,8 @@ def main(args):
         # Save the image
         stamp.write(
             file_name='COSMOS_{}_noiseless.fits'.format(ident),
-            dir=save_dir
+            dir=save_dir,
+            clobber=True
         )
 
     pickle.dump(psf, open(save_dir+'psf.pkl', 'wb'))
