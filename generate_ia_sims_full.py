@@ -3,18 +3,16 @@ import batsim
 import numpy as np
 import argparse
 import pickle
+import fitsio
 import os
 
 from multiprocessing import Pool, cpu_count
+from parallelbar import progress_starmap
 from tqdm import tqdm
 from time import time
 
-def generate_images(i, nn, scale, save_dir, galaxies, records, psf, n_rot, stamp_size):
+def generate_images(i, nn, scale, galaxies, records, psf, n_rot, stamp_size):
     gal = galaxies[i]
-    ident = records['IDENT'][i]
-
-    if os.path.exists(os.path.join(save_dir, f'COSMOS_{ident}_noiseless.fits')):
-        return
     
     # Get HLR for galaxy to create IA transform
     if records['use_bulgefit'][i]:
@@ -60,9 +58,7 @@ def generate_images(i, nn, scale, save_dir, galaxies, records, psf, n_rot, stamp
         sub_image = galsim.Image(gal_img, scale=scale)
         stamp[bounds] = sub_image
 
-    # Save the image
-    stamp.write(os.path.join(save_dir, f'COSMOS_{ident}_noiseless.fits'))
-
+    return stamp
 
 def main(args):
     '''
@@ -78,12 +74,11 @@ def main(args):
     save_dir = args.save_dir
     batch_process = args.batch_process
     seed = args.seed
-
-    print(f'Generating {n_gals} images with {nn}x{nn} pixels, scale {scale} arcsec/pixel')
+    n_proc = args.n_proc
 
     # Create LSST-like PSF
-    seeing = 0.67
-    psf = galsim.Moffat(beta=3.5, fwhm=seeing, trunc=seeing*4)
+    seeing = 0.8
+    psf = galsim.Moffat(beta=2.5, fwhm=seeing, trunc=seeing*4)
 
     # Generate the galaxy objects
     cosmos_cat = galsim.COSMOSCatalog()
@@ -97,26 +92,34 @@ def main(args):
     gal_inds = np.random.choice(len(cosmos_cat), n_gals, replace=False)
     records = cosmos_cat.getParametricRecord(gal_inds)
     galaxies = cosmos_cat.makeGalaxy(index=gal_inds, gal_type='parametric')
+    ids = records['IDENT']
 
     # Calculate the number of rotated galaxies
     n_rot = 4
     ng_eff = n_rot*n_gals
+
+    print(f'Generating {n_gals} images with {n_rot} rotations per image, {nn}x{nn} pixels, scale {scale} arcsec/pixel')
 
     # Total size of stamp for 4 galaxies
     stamp_size = int(nn * np.sqrt(n_rot))
 
     # Ensure save directory exists
     os.makedirs(save_dir, exist_ok=True)
+
+    # Create fits file to save images
+    fits = fitsio.FITS(os.path.join(save_dir, f'COSMOS_ngals={n_gals}_noiseless.fits'), 'rw', clobber=True)
     
     if batch_process == 'True':
         print('Batch processing images')
         original_omp_num_threads = os.environ.get('OMP_NUM_THREADS', None)
         os.environ['OMP_NUM_THREADS'] = '1'
 
-        with Pool(cpu_count()//2) as p:
-            args_list = [(i, nn, scale, save_dir, galaxies, records, psf, n_rot, stamp_size) for i in range(n_gals)]
-            p.starmap(generate_images, args_list)
-        
+        if n_proc == None:
+            n_proc = cpu_count()//2
+
+        args_list = [(i, nn, scale, galaxies, records, psf, n_rot, stamp_size) for i in range(n_gals)]
+        stamps = list(progress_starmap(generate_images, args_list, n_cpu=n_proc))
+    
         if original_omp_num_threads is None:
             del os.environ['OMP_NUM_THREADS']
         else:
@@ -124,16 +127,26 @@ def main(args):
     elif batch_process == 'False':
         print('Looping through images')
         progress = tqdm(total=ng_eff, desc='Generating images')
+        stamps = []
         for i in range(n_gals):
-            generate_images(i, nn, scale, save_dir, galaxies, records, psf, n_rot, stamp_size)
+            stamp = generate_images(i, nn, scale, galaxies, records, psf, n_rot, stamp_size)
+            stamps.append(stamp)
             progress.update(n_rot)
         progress.close()
     else:
         raise ValueError('batch_process must be either True or False')
+    
+    fits.write(None, header={}, extname='PRIMARY')
 
-    pickle.dump(psf, open(os.path.join(save_dir, 'psf.pkl'), 'wb'))
+    for i, stamp in enumerate(stamps):
+        fits.write(stamp.array, header={'IDENT': ids[i]}, extname=f'GALAXY_{ids[i]}')
 
-    print(f'Generated {n_gals} images in {time() - start:.2f} seconds')
+    psf_image = psf.drawImage(nx=nn, ny=nn, scale=scale).array
+    fits.write(psf_image, header={}, extname='PSF')
+
+    fits.close()
+
+    print(f'Simulated {n_gals*n_rot} galaxies in {time() - start:.2f} seconds')
 
 
 def cancel_shape_noise(gal_obj, nrot):
@@ -156,6 +169,7 @@ if __name__ == '__main__':
     parser.add_argument('--save_dir', type=str, default='.', help='Directory to save images')
     parser.add_argument('--batch_process', type=str, default=True, help='Batch process the images')
     parser.add_argument('--seed', type=int, default=None, help='Random seed for reproducibility')
+    parser.add_argument('--n_proc', type=int, default=None, help='Number of processes to use')
 
     args = parser.parse_args()
 
