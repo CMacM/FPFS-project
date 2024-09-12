@@ -13,6 +13,11 @@ from time import time
 
 def generate_images(i, nn, scale, galaxies, records, psf, n_rot, stamp_size):
     gal = galaxies[i]
+
+    # rescale flux to match LSST
+    mag_zero = 30
+    flux = 10 ** ((mag_zero - records['mag_auto'][i]) / 2.5)
+    gal = gal.withFlux(flux)
     
     # Get HLR for galaxy to create IA transform
     if records['use_bulgefit'][i]:
@@ -148,7 +153,6 @@ def main(args):
 
     print(f'Simulated {n_gals*n_rot} galaxies in {time() - start:.2f} seconds')
 
-
 def cancel_shape_noise(gal_obj, nrot):
     '''Create nrot rotated versions of the input galaxy object
     such that shape noise cancels out when averaging the shapes'''
@@ -167,7 +171,7 @@ if __name__ == '__main__':
     parser.add_argument('--nn', type=int, default=64, help='Number of pixels on a side')
     parser.add_argument('--scale', type=float, default=0.2, help='Pixel scale in arcseconds')
     parser.add_argument('--save_dir', type=str, default='.', help='Directory to save images')
-    parser.add_argument('--batch_process', type=str, default=True, help='Batch process the images')
+    parser.add_argument('--batch_process', type=str, default='True', help='Batch process the images')
     parser.add_argument('--seed', type=int, default=None, help='Random seed for reproducibility')
     parser.add_argument('--n_proc', type=int, default=None, help='Number of processes to use')
 

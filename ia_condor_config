@@ -1,0 +1,8 @@
+executable = generate_ia_sims_full.py
+arguments = --n_gals 10 --save_dir simulations/isolated/ --batch_process True --seed 42
+
+request_cpus = 10
+request_memory = 20G
+
+queue
+
